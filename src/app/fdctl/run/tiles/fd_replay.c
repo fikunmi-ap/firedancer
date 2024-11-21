@@ -33,6 +33,8 @@
 #include "../../../../choreo/fd_choreo.h"
 #include "../../../../disco/store/fd_epoch_forks.h"
 #include "../../../../funk/fd_funk_filemap.h"
+#include "../../../../disco/plugin/fd_plugin.h"
+#include "fd_poh_link.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -45,9 +47,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-
-// #define STOP_SLOT 280859632
 
 /* An estimate of the max number of transactions in a block.  If there are more
    transactions, they must be split into multiple sets. */
@@ -165,6 +164,8 @@ struct fd_replay_tile_ctx {
   ulong       stake_weights_out_chunk0;
   ulong       stake_weights_out_wmark;
   ulong       stake_weights_out_chunk;
+
+  poh_link_t replay_plugin;
 
   char const * blockstore_checkpt;
   int          blockstore_publish;
@@ -703,6 +704,19 @@ publish_slot_notifications( fd_replay_tile_ctx_t * ctx,
 #undef NOTIFY_END
   notify_time_ns += fd_log_wallclock();
   FD_LOG_DEBUG(("TIMING: notify_slot_time - slot: %lu, elapsed: %6.6f ms", curr_slot, (double)notify_time_ns * 1e-6));
+
+  fd_replay_complete_msg_t msg2 = {
+    .slot = curr_slot,
+    .total_txn_count = fork->slot_ctx.slot_bank.transaction_count,
+    .nonvote_txn_count = 0,
+    .failed_txn_count = 0,
+    .nonvote_failed_txn_count = 0,
+    .compute_units = 0,
+    .transaction_fee = fork->slot_ctx.slot_bank.collected_execution_fees,
+    .priority_fee = fork->slot_ctx.slot_bank.collected_priority_fees,
+    .parent_slot = ctx->parent_slot,
+  };
+  poh_link_publish( &ctx->replay_plugin, FD_PLUGIN_MSG_SLOT_COMPLETED, (uchar const *)&msg2, sizeof(msg2) );
 }
 
 static void
@@ -1520,7 +1534,6 @@ after_credit( fd_replay_tile_ctx_t * ctx,
   }
 }
 
-
 static void
 during_housekeeping( void * _ctx ) {
   fd_replay_tile_ctx_t * ctx = (fd_replay_tile_ctx_t *)_ctx;
@@ -1865,6 +1878,17 @@ unprivileged_init( fd_topo_t *      topo,
     poh_out->chunk0           = fd_dcache_compact_chunk0( poh_out->mem, poh_out_link->dcache );
     poh_out->wmark            = fd_dcache_compact_wmark( poh_out->mem, poh_out_link->dcache, poh_out_link->mtu );
     poh_out->chunk            = poh_out->chunk0;
+  }
+
+  if( FD_LIKELY( tile->poh.plugins_enabled ) ) {
+    poh_link_init( &ctx->replay_plugin, topo, tile, out1( topo, tile, "replay_plugi" ).idx );
+  } else {
+    /* Mark these mcaches as "available", so the system boots, but the
+       memory is not set so nothing will actually get published via.
+       the links. */
+    FD_COMPILER_MFENCE();
+    ctx->replay_plugin.mcache = (fd_frag_meta_t*)1;
+    FD_COMPILER_MFENCE();
   }
 
   // ulong busy_obj_id = fd_pod_queryf_ulong( topo->props, ULONG_MAX, "first_turbine" );

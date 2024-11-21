@@ -1,6 +1,7 @@
 #include "../../../../disco/tiles.h"
 
 #include "../../../../disco/plugin/fd_plugin.h"
+#include "fd_poh_link.h"
 
 /* Let's say there was a computer, the "leader" computer, that acted as
    a bank.  Users could send it messages saying they wanted to deposit
@@ -34,7 +35,7 @@
    These are the main technical innovations that enable Solana to work
    well.
 
-   What about Proof of History? 
+   What about Proof of History?
 
    One particular niche problem is about the leader schedule.  When the
    leader computer is moving from one bank to another, the new bank must
@@ -82,10 +83,10 @@
     (1) Whenever any other leader in the network finishes a slot, and
         the slot is determined to be the best one to build off of, this
         tile gets "reset" onto that block, the so called "reset slot".
-    
+
     (2) The tile is constantly doing busy work, hash(hash(hash(...))) on
         top of the last reset slot, even when it is not leader.
-    
+
     (3) When the tile becomes leader, it continues hashing from where it
         was.  Typically, the prior leader finishes their slot, so the
         reset slot will be the parent one, and this tile only publishes
@@ -186,7 +187,7 @@
         The leader needs to periodically checkpoint the hash value
         associated with a given hashcnt so that they can publish it to
         other nodes for verification.
-        
+
         On mainnet-beta, testnet, and devnet this occurs once every
         62,500 hashcnts, or approximately once every 6.4 microseconds.
         This value is determined at genesis time, and according to the
@@ -370,14 +371,6 @@ typedef struct {
 } fd_poh_in_ctx_t;
 
 typedef struct {
-  ulong       idx;
-  fd_wksp_t * mem;
-  ulong       chunk0;
-  ulong       wmark;
-  ulong       chunk;
-} fd_poh_out_ctx_t;
-
-typedef struct {
   fd_stem_context_t * stem;
 
   /* Static configuration determined at genesis creation time.  See
@@ -555,24 +548,6 @@ static volatile ulong fd_poh_returned_lock __attribute__((aligned(128UL)));
 /* Agave also needs to write to some mcaches, so we trampoline
    that via. the PoH tile as well. */
 
-struct poh_link {
-  fd_frag_meta_t * mcache;
-  ulong            depth;
-  ulong            tx_seq;
-
-  void *           mem;
-  void *           dcache;
-  ulong            chunk0;
-  ulong            wmark;
-  ulong            chunk;
-
-  ulong            cr_avail;
-  ulong            rx_cnt;
-  ulong *          rx_fseqs[ 32UL ];
-};
-
-typedef struct poh_link poh_link_t;
-
 poh_link_t gossip_dedup;
 poh_link_t stake_out;
 poh_link_t crds_shred;
@@ -582,77 +557,6 @@ poh_link_t replay_plugin;
 poh_link_t gossip_plugin;
 poh_link_t start_progress_plugin;
 poh_link_t vote_listener_plugin;
-
-static void
-poh_link_wait_credit( poh_link_t * link ) {
-  if( FD_LIKELY( link->cr_avail ) ) return;
-
-  while( 1 ) {
-    ulong cr_query = ULONG_MAX;
-    for( ulong i=0UL; i<link->rx_cnt; i++ ) {
-      ulong const * _rx_seq = link->rx_fseqs[ i ];
-      ulong rx_seq = FD_VOLATILE_CONST( *_rx_seq );
-      ulong rx_cr_query = (ulong)fd_long_max( (long)link->depth - fd_long_max( fd_seq_diff( link->tx_seq, rx_seq ), 0L ), 0L );
-      cr_query = fd_ulong_min( rx_cr_query, cr_query );
-    }
-    if( FD_LIKELY( cr_query>0UL ) ) {
-      link->cr_avail = cr_query;
-      break;
-    }
-    FD_SPIN_PAUSE();
-  }
-}
-
-static void
-poh_link_publish( poh_link_t *  link,
-                  ulong         sig,
-                  uchar const * data,
-                  ulong         data_sz ) {
-  while( FD_UNLIKELY( !FD_VOLATILE_CONST( link->mcache ) ) ) FD_SPIN_PAUSE();
-  if( FD_UNLIKELY( !link->mem ) ) return; /* link not enabled, don't publish */
-  poh_link_wait_credit( link );
-
-  uchar * dst = (uchar *)fd_chunk_to_laddr( link->mem, link->chunk );
-  fd_memcpy( dst, data, data_sz );
-  ulong tspub = (ulong)fd_frag_meta_ts_comp( fd_tickcount() );
-  fd_mcache_publish( link->mcache, link->depth, link->tx_seq, sig, link->chunk, data_sz, 0UL, 0UL, tspub );
-  link->chunk = fd_dcache_compact_next( link->chunk, data_sz, link->chunk0, link->wmark );
-  link->cr_avail--;
-  link->tx_seq++;
-}
-
-static void
-poh_link_init( poh_link_t *     link,
-               fd_topo_t *      topo,
-               fd_topo_tile_t * tile,
-               ulong            out_idx ) {
-  fd_topo_link_t * topo_link = &topo->links[ tile->out_link_id[ out_idx ] ];
-  fd_topo_wksp_t * wksp = &topo->workspaces[ topo->objs[ topo_link->dcache_obj_id ].wksp_id ];
-
-  link->mem      = wksp->wksp;
-  link->depth    = fd_mcache_depth( topo_link->mcache );
-  link->tx_seq   = 0UL;
-  link->dcache   = topo_link->dcache;
-  link->chunk0   = fd_dcache_compact_chunk0( wksp->wksp, topo_link->dcache );
-  link->wmark    = fd_dcache_compact_wmark ( wksp->wksp, topo_link->dcache, topo_link->mtu );
-  link->chunk    = link->chunk0;
-  link->cr_avail = 0UL;
-  link->rx_cnt   = 0UL;
-  for( ulong i=0UL; i<topo->tile_cnt; i++ ) {
-    fd_topo_tile_t * _tile = &topo->tiles[ i ];
-    for( ulong j=0UL; j<_tile->in_cnt; j++ ) {
-      if( _tile->in_link_id[ j ]==topo_link->id && _tile->in_link_reliable[ j ] ) {
-        FD_TEST( link->rx_cnt<32UL );
-        link->rx_fseqs[ link->rx_cnt++ ] = _tile->in_link_fseq[ j ];
-        break;
-      }
-    }
-  }
-  FD_COMPILER_MFENCE();
-  link->mcache = topo_link->mcache;
-  FD_COMPILER_MFENCE();
-  FD_TEST( link->mcache );
-}
 
 /* To help show correctness, functions that might be called from
    Rust, either directly or indirectly, have this fake "attribute"
@@ -1465,7 +1369,7 @@ after_credit( fd_poh_ctx_t *      ctx,
   FD_TEST( target_hashcnt <= restricted_hashcnt );
 
   if( FD_UNLIKELY( ctx->hashcnt==target_hashcnt ) ) return; /* Nothing to do, don't publish a tick twice */
-  
+
   *charge_busy = 1;
 
   while( ctx->hashcnt<target_hashcnt ) {
@@ -1597,7 +1501,7 @@ during_frag( fd_poh_ctx_t * ctx,
   int is_frag_for_prior_leader_slot = 0;
   if( FD_LIKELY( pkt_type==POH_PKT_TYPE_DONE_PACKING || pkt_type==POH_PKT_TYPE_MICROBLOCK ) ) {
     /* The following sequence is possible...
-    
+
         1. We become leader in slot 10
         2. While leader, we switch to a fork that is on slot 8, where
             we are leader
@@ -1900,29 +1804,6 @@ void
 fd_ext_resolv_publish_completed_blockhash( uchar * data,
                                            ulong   data_len ) {
   poh_link_publish( &replay_resolv, 1UL, data, data_len );
-}
-
-static inline fd_poh_out_ctx_t
-out1( fd_topo_t const *      topo,
-      fd_topo_tile_t const * tile,
-      char const *           name ) {
-  ulong idx = ULONG_MAX;
-
-  for( ulong i=0UL; i<tile->out_cnt; i++ ) {
-    fd_topo_link_t const * link = &topo->links[ tile->out_link_id[ i ] ];
-    if( !strcmp( link->name, name ) ) {
-      if( FD_UNLIKELY( idx!=ULONG_MAX ) ) FD_LOG_ERR(( "tile %s:%lu had multiple output links named %s but expected one", tile->name, tile->kind_id, name ));
-      idx = i;
-    } 
-  }
-
-  if( FD_UNLIKELY( idx==ULONG_MAX ) ) FD_LOG_ERR(( "tile %s:%lu had no output link named %s", tile->name, tile->kind_id, name ));
-
-  void * mem = topo->workspaces[ topo->objs[ topo->links[ tile->out_link_id[ idx ] ].dcache_obj_id ].wksp_id ].wksp;
-  ulong chunk0 = fd_dcache_compact_chunk0( mem, topo->links[ tile->out_link_id[ idx ] ].dcache );
-  ulong wmark  = fd_dcache_compact_wmark ( mem, topo->links[ tile->out_link_id[ idx ] ].dcache, topo->links[ tile->out_link_id[ idx ] ].mtu );
-
-  return (fd_poh_out_ctx_t){ .idx = idx, .mem = mem, .chunk0 = chunk0, .wmark = wmark, .chunk = chunk0 };
 }
 
 static void
