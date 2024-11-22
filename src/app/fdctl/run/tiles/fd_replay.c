@@ -166,6 +166,7 @@ struct fd_replay_tile_ctx {
   ulong       stake_weights_out_chunk;
 
   poh_link_t replay_plugin;
+  poh_link_t start_progress_plugin;
 
   char const * blockstore_checkpt;
   int          blockstore_publish;
@@ -707,7 +708,7 @@ publish_slot_notifications( fd_replay_tile_ctx_t * ctx,
 
   fd_replay_complete_msg_t msg2 = {
     .slot = curr_slot,
-    .total_txn_count = fork->slot_ctx.slot_bank.transaction_count,
+    .total_txn_count = fork->slot_ctx.slot_bank.transaction_count - fork->slot_ctx.parent_transaction_count,
     .nonvote_txn_count = 0,
     .failed_txn_count = 0,
     .nonvote_failed_txn_count = 0,
@@ -1301,6 +1302,13 @@ static void
 read_snapshot( void * _ctx, char const * snapshotfile, char const * incremental ) {
   fd_replay_tile_ctx_t * ctx = (fd_replay_tile_ctx_t *)_ctx;
 
+  // ValidatorStartProgress::DownloadingSnapshot
+  uchar msg[56];
+  fd_memset( msg, 0, sizeof(msg) );
+  msg[0] = 2;
+  msg[1] = 1;
+  poh_link_publish( &ctx->start_progress_plugin, FD_PLUGIN_MSG_START_PROGRESS, msg, sizeof(msg) );
+
   /* Pass the slot_ctx to snapshot_load or recover_banks */
 
   const char * snapshot = snapshotfile;
@@ -1315,11 +1323,22 @@ read_snapshot( void * _ctx, char const * snapshotfile, char const * incremental 
 
   /* Load incremental */
 
+  // ValidatorStartProgress::DownloadingSnapshot
+  fd_memset( msg, 0, sizeof(msg) );
+  msg[0] = 2;
+  msg[1] = 0;
+  poh_link_publish( &ctx->start_progress_plugin, FD_PLUGIN_MSG_START_PROGRESS, msg, sizeof(msg) );
+
   if( strlen( incremental ) > 0 ) {
     FD_MCNT_SET( REPLAY, SNAPSHOT_STATUS_INCREMENTAL_BEGIN, 1 );
     fd_snapshot_load( incremental, ctx->slot_ctx, ctx->tpool, false, false, FD_SNAPSHOT_TYPE_INCREMENTAL );
     FD_MCNT_SET( REPLAY, SNAPSHOT_STATUS_INCREMENTAL_END, 1 );
   }
+
+  // ValidatorStartProgress::DownloadedFullSnapshot
+  fd_memset( msg, 0, sizeof(msg) );
+  msg[0] = 3;
+  poh_link_publish( &ctx->start_progress_plugin, FD_PLUGIN_MSG_START_PROGRESS, msg, sizeof(msg) );
 
   fd_runtime_update_leaders( ctx->slot_ctx, ctx->slot_ctx->slot_bank.slot );
   FD_LOG_NOTICE(( "starting fd_bpf_scan_and_create_bpf_program_cache_entry..." ));
@@ -1515,6 +1534,12 @@ after_credit( fd_replay_tile_ctx_t * ctx,
         } FD_SCRATCH_SCOPE_END;
       }
     }
+
+    // ValidatorStartProgress::Running
+    uchar msg[56];
+    fd_memset( msg, 0, sizeof(msg) );
+    msg[0] = 15;
+    poh_link_publish( &ctx->start_progress_plugin, FD_PLUGIN_MSG_START_PROGRESS, msg, sizeof(msg) );
   }
 
   if( FD_UNLIKELY( ctx->in_wen_restart ) ) {
@@ -1882,12 +1907,14 @@ unprivileged_init( fd_topo_t *      topo,
 
   if( FD_LIKELY( tile->replay.plugins_enabled ) ) {
     poh_link_init( &ctx->replay_plugin, topo, tile, out1( topo, tile, "replay_plugi" ).idx );
+    poh_link_init( &ctx->start_progress_plugin, topo, tile, out1( topo, tile, "startp_plugi" ).idx );
   } else {
     /* Mark these mcaches as "available", so the system boots, but the
        memory is not set so nothing will actually get published via.
        the links. */
     FD_COMPILER_MFENCE();
     ctx->replay_plugin.mcache = (fd_frag_meta_t*)1;
+    ctx->start_progress_plugin.mcache = (fd_frag_meta_t*)1;
     FD_COMPILER_MFENCE();
   }
 
@@ -1997,6 +2024,11 @@ unprivileged_init( fd_topo_t *      topo,
     ctx->slots_replayed_file = fopen( tile->replay.slots_replayed, "w" );
     FD_TEST( ctx->slots_replayed_file );
   }
+
+  // ValidatorStartProgress::Initializing
+  uchar msg[56];
+  fd_memset( msg, 0, sizeof(msg) );
+  poh_link_publish( &ctx->start_progress_plugin, FD_PLUGIN_MSG_START_PROGRESS, msg, sizeof(msg) );
 }
 
 static ulong

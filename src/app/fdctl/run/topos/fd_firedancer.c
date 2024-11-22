@@ -461,7 +461,7 @@ fd_topo_initialize( config_t * config ) {
     /**/                 fd_topob_tile_out( topo, "replay", 0UL,                        "replay_plugi", 0UL                                                  );
     /**/                 fd_topob_tile_out( topo, "bhole",  0UL,                        "gossip_plugi", 0UL                                                  );
     /**/                 fd_topob_tile_out( topo, "bhole",  0UL,                        "poh_plugin",   0UL                                                  );
-    /**/                 fd_topob_tile_out( topo, "bhole",  0UL,                        "startp_plugi", 0UL                                                  );
+    /**/                 fd_topob_tile_out( topo, "replay", 0UL,                        "startp_plugi", 0UL                                                  );
     /**/                 fd_topob_tile_out( topo, "bhole",  0UL,                        "votel_plugin", 0UL                                                  );
     /**/                 fd_topob_tile_out( topo, "plugin", 0UL,                        "plugin_out", 0UL                                                    );
 
