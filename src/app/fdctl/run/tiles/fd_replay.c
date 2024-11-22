@@ -1880,7 +1880,7 @@ unprivileged_init( fd_topo_t *      topo,
     poh_out->chunk            = poh_out->chunk0;
   }
 
-  if( FD_LIKELY( tile->poh.plugins_enabled ) ) {
+  if( FD_LIKELY( tile->replay.plugins_enabled ) ) {
     poh_link_init( &ctx->replay_plugin, topo, tile, out1( topo, tile, "replay_plugi" ).idx );
   } else {
     /* Mark these mcaches as "available", so the system boots, but the
