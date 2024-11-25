@@ -1467,6 +1467,9 @@ after_credit( fd_replay_tile_ctx_t * ctx,
           ulong buf_len = 0;
           uchar * buf = fd_chunk_to_laddr( ctx->gossip_out_mem, ctx->gossip_out_chunk );
           fd_sysvar_slot_history_read( ctx->slot_ctx, fd_scratch_virtual(), ctx->slot_ctx->slot_history );
+          /* TODO: pass the vote accounts of the next epoch as well */
+          /*       fd_epoch_bank_t * epoch_bank = fd_exec_epoch_ctx_epoch_bank( slot_ctx->epoch_ctx ); */
+          /*       epoch_bank->next_epoch_stakes */
           fd_restart_init( ctx->restart,
                            &ctx->slot_ctx->slot_bank.epoch_stakes,
                            ctx->tower,
@@ -1486,6 +1489,7 @@ after_credit( fd_replay_tile_ctx_t * ctx,
           ctx->gossip_out_seq   = fd_seq_inc( ctx->gossip_out_seq, 1UL );
           ctx->gossip_out_chunk = fd_dcache_compact_next( ctx->gossip_out_chunk, buf_len, ctx->gossip_out_chunk0, ctx->gossip_out_wmark );
 
+          /* TODO: load snapshot instead of funk checkpoint */
           /* FIXME: Restoring funk checkpoint does not give the correct epoch number,
            *        i.e., the epoch number when the funk checkpoint file is produced.
            *        For now, we need to redo stakes->epoch in order to avoid a BHM in
@@ -1549,6 +1553,7 @@ during_housekeeping( void * _ctx ) {
     fd_ghost_publish( ctx->ghost, smr );
   }
 
+  /* TODO: generate snapshot file instead of checkpointing funk; dump the latest tower sent */
   /* FIXME: Decide how to tell FD to checkpoint funk and then halt before restarting FD in wen-restart mode */
   if( ctx->in_wen_restart && ctx->curr_slot>ctx->snapshot_slot+250 ) {
     checkpt( ctx );

@@ -42,6 +42,7 @@ struct fd_restart {
   /* States initialized at the beginning */
   ulong                  funk_root;
   ulong                  tower_root;
+  /* TODO: it seems that we can remove tower_root and only use funk_root */
   ulong                  total_stake;
   ulong                  num_vote_accts;
   fd_stake_weight_t      stake_weights[ MAX_RESTART_PEERS ];

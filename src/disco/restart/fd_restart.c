@@ -48,14 +48,13 @@ fd_restart_init( fd_restart_t * restart,
                  fd_pubkey_t * coordinator_pubkey,
                  uchar * out_buf,
                  ulong * out_buf_len ) {
+  /* Save the vote account information of two epochs into fd_restart_t */
+  /* TODO: save the vote account information of the next epoch in fd_restart_t as well */
   restart->num_vote_accts     = fd_stake_weights_by_node( accs, restart->stake_weights );
   restart->total_stake        = 0;
   restart->total_active_stake = 0;
-  restart->tower_root         = tower->root;
-  restart->funk_root          = fd_funk_last_publish( funk )->ul[0];
-  FD_TEST( restart->num_vote_accts <= MAX_RESTART_PEERS );
-  FD_LOG_WARNING(( "fd_restart_init: funk root=%lu, tower root=%lu", restart->funk_root, restart->tower_root ));
 
+  /* TODO: check we have the correct information for the next epoch as well */
   FD_LOG_NOTICE(( "%lu staked voters", restart->num_vote_accts ));
   for( ulong i=0; i<restart->num_vote_accts; i++ ) {
     FD_LOG_NOTICE(( "fd_restart_init: %s holds stake amount=%lu",
@@ -64,7 +63,9 @@ fd_restart_init( fd_restart_t * restart,
     restart->total_stake += restart->stake_weights[i].stake;
   }
 
+  /* Prepare the LastVotedForkSlot gossip message in out_buf */
   fd_gossip_restart_last_voted_fork_slots_t * msg = (fd_gossip_restart_last_voted_fork_slots_t *) fd_type_pun( out_buf );
+  /* TODO: dump the right tower to use when terminating FD and reload the right tower */
   /* FIXME: Need to check whether this tower loaded from the funk checkpoint is the right one to use; It seems stale. */
   if( fd_tower_votes_cnt( tower->votes ) == 0 ) {
     FD_LOG_ERR(( "The tower loaded has 0 votes and wen-restart cannot proceed without an appropriate tower" ));
@@ -74,6 +75,7 @@ fd_restart_init( fd_restart_t * restart,
     FD_LOG_ERR(( "Voted slot should not exceed the end of slot history" ));
   }
 
+  /* Given last_voted_slot, get the block hash for the LastVotedForkSlot gossip message */
   fd_blockstore_start_read( blockstore );
   fd_hash_t const * vote_block_hash = fd_blockstore_block_hash_query( blockstore, msg->last_voted_slot );
   fd_blockstore_end_read( blockstore );
@@ -84,6 +86,7 @@ fd_restart_init( fd_restart_t * restart,
     fd_memcpy( msg->last_voted_hash.hash, vote_block_hash->hash, sizeof(fd_hash_t) );
   }
 
+  /* Given last_voted_slot, get the slot history bitmap for the LastVotedForkSlot gossip message */
   ulong end_slot   = msg->last_voted_slot;
   ulong start_slot = ( end_slot>LAST_VOTED_FORK_MAX_SLOTS? end_slot-LAST_VOTED_FORK_MAX_SLOTS : 0 );
   ulong num_slots  = end_slot-start_slot+1;
@@ -112,6 +115,12 @@ fd_restart_init( fd_restart_t * restart,
     }
   }
 
+  /* Initialize the other fields of fd_restart_t */
+  restart->tower_root                      = tower->root;
+  restart->funk_root                       = fd_funk_last_publish( funk )->ul[0];
+  FD_TEST( restart->num_vote_accts <= MAX_RESTART_PEERS );
+  FD_LOG_WARNING(( "fd_restart_init: funk root=%lu, tower root=%lu", restart->funk_root, restart->tower_root ));
+
   restart->stage                           = WR_STAGE_FIND_HEAVIEST_FORK_SLOT_NUM;
   restart->heaviest_fork_slot              = 0;
   restart->heaviest_fork_ready             = 0;
@@ -135,6 +144,7 @@ fd_restart_recv_last_voted_fork_slots( fd_restart_t * restart,
     return;
   }
 
+  /* TODO: do this for both epochs */
   ulong stake          = ULONG_MAX;
   fd_pubkey_t * pubkey = &msg->from;
   for( ulong i=0; i<restart->num_vote_accts; i++ ) {
@@ -160,10 +170,12 @@ fd_restart_recv_last_voted_fork_slots( fd_restart_t * restart,
                   restart->total_stake,
                   percentile));
 
+  /* TODO: at this point, we shall already have a decoded raw-format bitmap in memory? */
   if( FD_UNLIKELY( msg->offsets.discriminant==fd_restart_slots_offsets_enum_run_length_encoding ) ) {
     FD_LOG_ERR(( "Decoding RunLengthEncoding offsets is not implemented yet" ));
   }
 
+  /* Decode the slot history bitmap in the gossip message, and aggregate stake into slot_to_stake accordingly */
   for( ulong i=0, last_voted_slot = msg->last_voted_slot; \
        i<msg->offsets.inner.raw_offsets.offsets.len; i++ ) {
     if( FD_UNLIKELY( last_voted_slot<restart->tower_root+i ) ) break;
@@ -175,9 +187,11 @@ fd_restart_recv_last_voted_fork_slots( fd_restart_t * restart,
     if( FD_LIKELY( bit ) ) {
       ulong offset = slot-restart->tower_root;
       restart->slot_to_stake[ offset ] += stake;
+      /* TODO: repair slots >=stake_threshold along the way instead of waiting till the end? */
     }
   }
 
+  /* TODO: take care of both epochs, which requires the 33% threshold */
   if( FD_UNLIKELY( percentile>=WAIT_FOR_SUPERMAJORITY_THRESHOLD_PERCENT ) ) {
     ulong stake_threshold = restart->total_active_stake
                             - restart->total_stake * HEAVIEST_FORK_THRESHOLD_DELTA_PERCENT / 100UL;
@@ -194,6 +208,8 @@ fd_restart_recv_last_voted_fork_slots( fd_restart_t * restart,
       FD_LOG_ERR(( "Funk root(%lu) is higher than the heaviest fork slot(%lu)",
                    restart->funk_root, restart->heaviest_fork_slot ));
     }
+    /* TODO: verify that all slots >=stake_threshold form a single chain in blockstore and contain the funk root */
+    /* But, at this point, maybe there are still slots need to be repaired? */
 
     *out_heaviest_fork_found = 1;
     restart->stage           = WR_STAGE_FIND_HEAVIEST_FORK_BANK_HASH;
@@ -213,7 +229,7 @@ fd_restart_recv_heaviest_fork( fd_restart_t * restart,
                sizeof(fd_hash_t) );
     restart->coordinator_heaviest_fork_ready = 1;
   } else {
-    FD_LOG_WARNING(( "Received a restart_heaviest_fork message from non-coordinator %s",
+    FD_LOG_WARNING(( "Received and ignored a restart_heaviest_fork message from non-coordinator %s",
                      FD_BASE58_ENC_32_ALLOCA( &msg->from ) ));
   }
 }
@@ -266,6 +282,7 @@ fd_restart_find_heaviest_fork_bank_hash( fd_restart_t * restart,
     *out_need_repair = 1;
   }
 
+  /* TODO: if we do the repair along the way, we cannot do this cleanup below... */
   /* Cancel txns after the funk root from funk */
   fd_funk_start_write( funk );
   for( ulong slot=restart->funk_root+1; slot<=restart->heaviest_fork_slot; slot++ ) {
@@ -305,6 +322,7 @@ fd_restart_verify_heaviest_fork( fd_restart_t * restart,
                              sizeof(fd_pubkey_t) )==0 ) ) {
       // I am the wen-restart coordinator
       if( FD_UNLIKELY( !restart->coordinator_heaviest_fork_sent ) ) {
+        /* TODO: send this message periodically? */
         restart->coordinator_heaviest_fork_sent = 1;
         fd_gossip_restart_heaviest_fork_t * msg = (fd_gossip_restart_heaviest_fork_t *) fd_type_pun( out_buf );
         msg->observed_stake = 0;
@@ -326,10 +344,12 @@ fd_restart_verify_heaviest_fork( fd_restart_t * restart,
                      FD_BASE58_ENC_32_ALLOCA( &restart->heaviest_fork_bank_hash ),
                      FD_BASE58_ENC_32_ALLOCA( &restart->coordinator_heaviest_fork_bank_hash ) ));
       }
-      /* TODO: generate an incremental snapshot */
+      /* TODO: insert a hard fork and generate an incremental snapshot */
       restart->stage = WR_STAGE_GENERATE_SNAPSHOT;
       FD_LOG_ERR(( "Wen-restart succeeds with slot=%lu, bank hash=%s",
                    restart->heaviest_fork_slot, FD_BASE58_ENC_32_ALLOCA( &restart->heaviest_fork_bank_hash ) ));
     }
   }
 }
+
+/* TODO: the coordinator needs to aggregate HeaviestFork messages, just for the information */

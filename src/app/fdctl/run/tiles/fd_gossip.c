@@ -293,7 +293,7 @@ static void
 gossip_deliver_fun( fd_crds_data_t * data, void * arg ) {
   fd_gossip_tile_ctx_t * ctx = (fd_gossip_tile_ctx_t *)arg;
 
-  if( fd_crds_data_is_restart_last_voted_fork_slots( data ) ) {
+  if( fd_crds_data_is_restart_last_voted_fork_slots( data ) /* TODO: only in_wen_restart */ ) {
     ulong struct_len = sizeof( fd_gossip_restart_last_voted_fork_slots_t );
     /* TODO: handle RunLengthEncoding for bitmap */
     ulong bitmap_len = data->inner.restart_last_voted_fork_slots.offsets.inner.raw_offsets.offsets.bits.bits_len;
@@ -314,7 +314,7 @@ gossip_deliver_fun( fd_crds_data_t * data, void * arg ) {
                        total_len, 0UL, 0, 0 );
     ctx->replay_out_seq   = fd_seq_inc( ctx->replay_out_seq, 1UL );
     ctx->replay_out_chunk = fd_dcache_compact_next( ctx->replay_out_chunk, total_len, ctx->replay_out_chunk0, ctx->replay_out_wmark );
-  } else if( fd_crds_data_is_restart_heaviest_fork( data ) ) {
+  } else if( fd_crds_data_is_restart_heaviest_fork( data ) /* TODO: only in_wen_restart */ ) {
     uchar * heaviest_fork_msg_ = fd_chunk_to_laddr( ctx->replay_out_mem, ctx->replay_out_chunk );
     FD_STORE( uint, heaviest_fork_msg_, fd_crds_data_enum_restart_heaviest_fork );
     fd_memcpy( heaviest_fork_msg_+sizeof(uint),
